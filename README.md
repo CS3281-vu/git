@@ -1,3 +1,5 @@
+Project by Harrison Stall and Samuel Lijin
+
 Git - fast, scalable, distributed revision control system
 =========================================================
 

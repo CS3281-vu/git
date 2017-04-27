@@ -6,6 +6,7 @@
 #include "diffcore.h"
 #include "hashmap.h"
 #include "progress.h"
+#include "thread-utils.h"
 
 /* Table of rename/copy destinations */
 
@@ -458,9 +459,17 @@ struct calc_diff_score_thread_params {
 	struct diff_filespec *one, *two;
 	struct diff_score *src_candidates;
 	int i, j, minimum_score;
+#ifndef NO_PTHREADS
+	volatile int *done;
+#endif
 };
 
 static void threaded_calc_diff_score(struct calc_diff_score_thread_params *p) {
+#ifndef NO_PTHREADS
+	pthread_mutex_lock(&p->one->mutex);
+	pthread_mutex_lock(&p->two->mutex);
+#endif
+
 	p->src_candidates[p->j].score = estimate_similarity(p->one, p->two,
 			                                            p->minimum_score);
 	p->src_candidates[p->j].name_score = basename_same(p->one, p->two);
@@ -469,6 +478,13 @@ static void threaded_calc_diff_score(struct calc_diff_score_thread_params *p) {
 
 	diff_free_filespec_blob(p->one);
 	diff_free_filespec_blob(p->two);
+
+#ifndef NO_PTHREADS
+	pthread_mutex_unlock(&p->one->mutex);
+	pthread_mutex_unlock(&p->two->mutex);
+
+	*p->done = 1;
+#endif
 }
 
 void diffcore_rename(struct diff_options *options)
@@ -478,7 +494,7 @@ void diffcore_rename(struct diff_options *options)
 	struct diff_queue_struct *q = &diff_queued_diff;
 	struct diff_queue_struct outq;
 	struct diff_score *mx;
-	int i, j, rename_count, skip_unmodified = 0;
+	int i, j, t, rename_count, skip_unmodified = 0;
 	int num_create, dst_cnt;
 	struct progress *progress = NULL;
 
@@ -567,11 +583,33 @@ void diffcore_rename(struct diff_options *options)
 				rename_dst_nr * rename_src_nr, 50, 1);
 	}
 
+#ifndef NO_PTHREADS
+	for (i = 0; i < rename_src_nr; i++)
+		pthread_mutex_init(&rename_src[i].p->one->mutex, NULL);
+
+	for (i = 0; i < rename_dst_nr; i++)
+		pthread_mutex_init(&rename_dst[i].two->mutex, NULL);
+
+	int rename_thread_nr = online_cpus();
+
+	pthread_t *rename_thread_pool;
+	volatile int *rename_thread_done;
 	struct calc_diff_score_thread_params *rename_thread_args;
-	rename_thread_args = xcalloc(1, sizeof(*rename_thread_args));
+
+	rename_thread_pool = xcalloc(rename_thread_nr, sizeof(pthread_t));
+	rename_thread_done = xcalloc(rename_thread_nr, sizeof(*rename_thread_done));
+	rename_thread_args = xcalloc(rename_thread_nr, sizeof(*rename_thread_args));
+
+	// mark all threads as not-yet-started
+	for (i = 0; i < rename_thread_nr; i++)
+		rename_thread_done[i] = -1;
+#else
+	struct calc_diff_score_thread_params *rename_thread_args;
+	rename_thread_args = xmalloc(sizeof(*rename_thread_args));
+#endif
 
 	mx = xcalloc(st_mult(rename_src_nr, num_create), sizeof(*mx));
-	for (dst_cnt = i = 0; i < rename_dst_nr; i++) {
+	for (dst_cnt = i = t = 0; i < rename_dst_nr; i++) {
 		struct diff_filespec *two = rename_dst[i].two;
 		struct diff_score *m;
 
@@ -589,7 +627,27 @@ void diffcore_rename(struct diff_options *options)
 			    diff_unmodified_pair(rename_src[j].p))
 				continue;
 
+#ifndef NO_PTHREADS
+			while (1) {
+				if (rename_thread_done[t]) {
+					// if thread claims to be done, wait for it to clean up
+					if (rename_thread_done[t] > 0) {
+						pthread_join(rename_thread_pool[t], NULL);
+						// mark thread as joined
+						rename_thread_done[t] = -1;
+					}
+					break;
+				}
+				else {
+					t = (t + 1) % rename_thread_nr;
+					// maybe pthread_yield() here every rename_thread_nr iterations
+				}
+			}
+
+			struct calc_diff_score_thread_params *p = rename_thread_args + t;
+#else
 			struct calc_diff_score_thread_params *p = rename_thread_args;
+#endif
 
 			p->i = i;
 			p->j = j;
@@ -598,11 +656,35 @@ void diffcore_rename(struct diff_options *options)
 			p->two = two;
 			p->src_candidates = m;
 
+#ifndef NO_PTHREADS
+			p->done = rename_thread_done + t;
+			*p->done = 0;
+
+			pthread_create(&rename_thread_pool[t], NULL,
+					(void * (*)(void *)) threaded_calc_diff_score, p);
+#else
 			threaded_calc_diff_score(p);
+#endif
 		}
 		dst_cnt++;
+#ifdef NO_PTHREADS
 		display_progress(progress, (i+1)*rename_src_nr);
+#endif
 	}
+
+#ifndef NO_PTHREADS
+	// wait for all similarity computations to finish
+	for (t = 0; t < rename_thread_nr; t++) {
+		if (rename_thread_done[t] > -1) {
+			pthread_join(rename_thread_pool[t], NULL);
+			rename_thread_done[t] = -1;
+		}
+	}
+
+	free(rename_thread_pool);
+	free(rename_thread_done);
+	free(rename_thread_args);
+#endif
 
 	stop_progress(&progress);
 

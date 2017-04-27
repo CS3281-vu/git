@@ -478,7 +478,7 @@ void diffcore_rename(struct diff_options *options)
 	struct diff_queue_struct *q = &diff_queued_diff;
 	struct diff_queue_struct outq;
 	struct diff_score *mx;
-	int i, j, t, rename_count, skip_unmodified = 0;
+	int i, j, t, nr_done, rename_count, skip_unmodified = 0;
 	int num_create, dst_cnt;
 	struct progress *progress = NULL;
 
@@ -593,7 +593,7 @@ void diffcore_rename(struct diff_options *options)
 #endif
 
 	mx = xcalloc(st_mult(rename_src_nr, num_create), sizeof(*mx));
-	for (dst_cnt = i = t = 0; i < rename_dst_nr; i++) {
+	for (dst_cnt = nr_done = i = t = 0; i < rename_dst_nr; i++) {
 		struct diff_filespec *two = rename_dst[i].two;
 		struct diff_score *m;
 
@@ -608,8 +608,10 @@ void diffcore_rename(struct diff_options *options)
 			struct diff_filespec *one = rename_src[j].p->one;
 
 			if (skip_unmodified &&
-			    diff_unmodified_pair(rename_src[j].p))
+			    diff_unmodified_pair(rename_src[j].p)) {
+				nr_done++;
 				continue;
+			}
 
 #ifndef NO_PTHREADS
 			while (1) {
@@ -619,6 +621,9 @@ void diffcore_rename(struct diff_options *options)
 						pthread_join(rename_thread_pool[t], NULL);
 						// mark thread as joined
 						rename_thread_done[t] = -1;
+
+						nr_done++;
+						display_progress(progress, nr_done);
 					}
 					break;
 				}

@@ -631,7 +631,7 @@ void diffcore_rename(struct diff_options *options)
 				else {
 					t = (t + 1) % rename_thread_nr;
 					if (t_orig == t)
-						pthread_yield();
+						sched_yield();
 				}
 			}
 

@@ -3,6 +3,7 @@
 
 #ifndef NO_PTHREADS
 #include <pthread.h>
+#include <sched.h>
 
 extern int online_cpus(void);
 extern int init_recursive_mutex(pthread_mutex_t*);

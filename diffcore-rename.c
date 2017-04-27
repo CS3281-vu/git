@@ -580,6 +580,10 @@ void diffcore_rename(struct diff_options *options)
 #endif
 
 	mx = xcalloc(st_mult(rename_src_nr, num_create), sizeof(*mx));
+
+	for (i = 0; i < rename_src_nr * num_create; i++)
+		mx[i].dst = -1;
+
 	for (dst_cnt = nr_done = i = t = 0; i < rename_dst_nr; i++) {
 		struct diff_filespec *two = rename_dst[i].two;
 		struct diff_score *m;
@@ -588,8 +592,6 @@ void diffcore_rename(struct diff_options *options)
 			continue; /* dealt with exact match already. */
 
 		m = &mx[dst_cnt * rename_src_nr];
-		for (j = 0; j < rename_src_nr; j++)
-			m[j].dst = -1;
 
 		for (j = 0; j < rename_src_nr; j++) {
 			struct diff_filespec *one = rename_src[j].p->one;

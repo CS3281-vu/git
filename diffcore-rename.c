@@ -564,7 +564,7 @@ void diffcore_rename(struct diff_options *options)
 	if (options->show_rename_progress) {
 		progress = start_progress_delay(
 				_("Performing inexact rename detection"),
-				rename_dst_nr * rename_src_nr, 50, 1);
+				num_create * rename_src_nr, 50, 1);
 	}
 
 #ifndef NO_PTHREADS
@@ -652,7 +652,7 @@ void diffcore_rename(struct diff_options *options)
 		}
 		dst_cnt++;
 #ifdef NO_PTHREADS
-		display_progress(progress, (i+1)*rename_src_nr);
+		display_progress(progress, dst_cnt * rename_src_nr);
 #endif
 	}
 

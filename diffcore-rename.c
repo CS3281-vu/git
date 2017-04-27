@@ -454,6 +454,23 @@ static int find_renames(struct diff_score *mx, int dst_cnt, int minimum_score, i
 	return count;
 }
 
+struct calc_diff_score_thread_params {
+	struct diff_filespec *one, *two;
+	struct diff_score *src_candidates;
+	int i, j, minimum_score;
+};
+
+static void threaded_calc_diff_score(struct calc_diff_score_thread_params *p) {
+	p->src_candidates[p->j].score = estimate_similarity(p->one, p->two,
+			                                            p->minimum_score);
+	p->src_candidates[p->j].name_score = basename_same(p->one, p->two);
+	p->src_candidates[p->j].dst = p->i;
+	p->src_candidates[p->j].src = p->j;
+
+	diff_free_filespec_blob(p->one);
+	diff_free_filespec_blob(p->two);
+}
+
 void diffcore_rename(struct diff_options *options)
 {
 	int detect_rename = options->detect_rename;
@@ -550,6 +567,9 @@ void diffcore_rename(struct diff_options *options)
 				rename_dst_nr * rename_src_nr, 50, 1);
 	}
 
+	struct calc_diff_score_thread_params *rename_thread_args;
+	rename_thread_args = xcalloc(1, sizeof(*rename_thread_args));
+
 	mx = xcalloc(st_mult(rename_src_nr, num_create), sizeof(*mx));
 	for (dst_cnt = i = 0; i < rename_dst_nr; i++) {
 		struct diff_filespec *two = rename_dst[i].two;
@@ -564,28 +584,26 @@ void diffcore_rename(struct diff_options *options)
 
 		for (j = 0; j < rename_src_nr; j++) {
 			struct diff_filespec *one = rename_src[j].p->one;
-			struct diff_score this_src;
 
 			if (skip_unmodified &&
 			    diff_unmodified_pair(rename_src[j].p))
 				continue;
 
-			this_src.score = estimate_similarity(one, two,
-							     minimum_score);
-			this_src.name_score = basename_same(one, two);
-			this_src.dst = i;
-			this_src.src = j;
-			m[j] = this_src;
-			/*
-			 * Once we run estimate_similarity,
-			 * We do not need the text anymore.
-			 */
-			diff_free_filespec_blob(one);
-			diff_free_filespec_blob(two);
+			struct calc_diff_score_thread_params *p = rename_thread_args;
+
+			p->i = i;
+			p->j = j;
+			p->minimum_score = minimum_score;
+			p->one = one;
+			p->two = two;
+			p->src_candidates = m;
+
+			threaded_calc_diff_score(p);
 		}
 		dst_cnt++;
 		display_progress(progress, (i+1)*rename_src_nr);
 	}
+
 	stop_progress(&progress);
 
 	/* cost matrix sorted by most to least similar pair */

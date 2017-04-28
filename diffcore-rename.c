@@ -428,8 +428,8 @@ static int find_renames(struct diff_score *mx, int dst_cnt, int minimum_score, i
 
 struct calc_diff_score_thread_params {
 	struct diff_filespec *one, *two;
-	struct diff_score *src_candidates;
-	int i, j, minimum_score;
+	struct diff_score *score_to_calc;
+	int i_src, i_dst, minimum_score;
 #ifndef NO_PTHREADS
 	volatile int *done;
 #endif
@@ -441,11 +441,11 @@ static void threaded_calc_diff_score(struct calc_diff_score_thread_params *p) {
 	pthread_mutex_lock(&p->two->mutex);
 #endif
 
-	p->src_candidates[p->j].score = estimate_similarity(p->one, p->two,
-			                                            p->minimum_score);
-	p->src_candidates[p->j].name_score = basename_same(p->one, p->two);
-	p->src_candidates[p->j].dst = p->i;
-	p->src_candidates[p->j].src = p->j;
+	p->score_to_calc->score = estimate_similarity(p->one, p->two,
+			                                      p->minimum_score);
+	p->score_to_calc->name_score = basename_same(p->one, p->two);
+	p->score_to_calc->dst = p->i_dst;
+	p->score_to_calc->src = p->i_src;
 
 	diff_free_filespec_blob(p->one);
 	diff_free_filespec_blob(p->two);
@@ -584,22 +584,23 @@ void diffcore_rename(struct diff_options *options)
 	for (i = 0; i < rename_src_nr * num_create; i++)
 		mx[i].dst = -1;
 
-	for (dst_cnt = nr_done = i = t = 0; i < rename_dst_nr; i++) {
-		struct diff_filespec *two = rename_dst[i].two;
-		struct diff_score *m;
+	int i_src, i_dst;
 
+	for (dst_cnt = nr_done = i = t = 0; i < rename_dst_nr; i++) {
 		if (rename_dst[i].pair)
 			continue; /* dealt with exact match already. */
 
-		m = &mx[dst_cnt * rename_src_nr];
+		i_dst = i;
+		i_src = 0;
 
 		for (j = 0; j < rename_src_nr; j++) {
-			struct diff_filespec *one = rename_src[j].p->one;
-
-			if (skip_unmodified &&
-			    diff_unmodified_pair(rename_src[j].p)) {
+			while (rename_dst[i_dst].pair) {
+				i_dst = (i_dst + 1) % rename_dst_nr;
+			}
+			while (skip_unmodified &&
+					diff_unmodified_pair(rename_src[i_src].p)) {
+				i_src = (i_src + 1) % rename_src_nr;
 				nr_done++;
-				continue;
 			}
 
 #ifndef NO_PTHREADS
@@ -629,12 +630,12 @@ void diffcore_rename(struct diff_options *options)
 			struct calc_diff_score_thread_params *p = rename_thread_args;
 #endif
 
-			p->i = i;
-			p->j = j;
+			p->i_src = i_src;
+			p->i_dst = i_dst;
 			p->minimum_score = minimum_score;
-			p->one = one;
-			p->two = two;
-			p->src_candidates = m;
+			p->one = rename_src[i_src].p->one;
+			p->two = rename_dst[i_dst].two;
+			p->score_to_calc = &mx[dst_cnt * rename_src_nr + i_src];
 
 #ifndef NO_PTHREADS
 			p->done = rename_thread_done + t;
@@ -645,6 +646,9 @@ void diffcore_rename(struct diff_options *options)
 #else
 			threaded_calc_diff_score(p);
 #endif
+			nr_done++;
+			i_src = (i_src + 1) % rename_src_nr;
+			i_dst = (i_dst + 1) % rename_dst_nr;
 		}
 		dst_cnt++;
 #ifdef NO_PTHREADS

@@ -2956,7 +2956,7 @@ int sha1_object_info(const unsigned char *sha1, unsigned long *sizep)
 	return type;
 }
 
-pthread_mutex_t read_pack_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t read_pack_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 
 static void *read_packed_sha1(const unsigned char *sha1,
 			      enum object_type *type, unsigned long *size)

@@ -2,6 +2,8 @@
 
 Samuel Lijin and Harrison Stall: an experiment in parallelizing git rename detection.
 
+Note: our project files can be found under the `docs` directory and inside `slides.pdf`.
+
 ## Overview
 
 If a file is renamed between commits in git, that information is not recorded in the git database; when generating changelogs, git decides what changes between commits constitute renames in realtime.

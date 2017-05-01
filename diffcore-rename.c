@@ -424,7 +424,7 @@ static int find_renames(struct diff_score *mx, int dst_cnt, int minimum_score, i
 {
 	int count = 0, i;
 
-	for (i = 0; i < dst_cnt * NUM_CANDIDATE_PER_DST; i++) {
+	for (i = 0; i < dst_cnt * rename_src_nr; i++) {
 		struct diff_rename_dst *dst;
 
 		if ((mx[i].dst < 0) ||
@@ -439,6 +439,67 @@ static int find_renames(struct diff_score *mx, int dst_cnt, int minimum_score, i
 		count++;
 	}
 	return count;
+}
+
+struct calc_diff_score_thread_params {
+	pthread_mutex_t mutex;
+	struct diff_score *mx;
+	int i, j, dst_cnt, minimum_score;
+};
+
+void threaded_calc_diff_scores(struct calc_diff_score_thread_params *p) {
+	struct diff_filespec *one, *two;
+	struct diff_score *m;
+	int i, j;
+
+	while (1) {
+		pthread_mutex_lock(&p->mutex);
+
+		if (p->i == p->dst_cnt) {
+			pthread_mutex_unlock(&p->mutex);
+			break;
+		}
+
+		i = p->i;
+		p->i++;
+
+		pthread_mutex_unlock(&p->mutex);
+
+		// only enter the loop if any work whatsoever will be done
+		for (j = 0; j < rename_src_nr; j++)
+			if (p->mx[i * rename_src_nr + j].dst > -1)
+				break;
+		if (j == rename_src_nr)
+			continue;
+		two = rename_dst[p->mx[i * rename_src_nr + j].dst].two;
+
+		pthread_mutex_lock(&two->mutex);
+
+		for (j = 0; j < rename_src_nr; j++) {
+			m = &p->mx[i * rename_src_nr + j];
+
+			p->j++;
+
+			if (m->dst == -1)
+				continue;
+
+			one = rename_src[m->src].p->one;
+
+			pthread_mutex_lock(&one->mutex);
+
+			m->score = estimate_similarity(one, two, p->minimum_score);
+			m->name_score = basename_same(one, two);
+
+			// Once we run estimate_similarity, we don't need the text anymore
+			// since it lazy-loads diff_filespec->cnt_data.
+			diff_free_filespec_blob(one);
+			diff_free_filespec_blob(two);
+
+			pthread_mutex_unlock(&one->mutex);
+		}
+
+		pthread_mutex_unlock(&two->mutex);
+	}
 }
 
 void diffcore_rename(struct diff_options *options)
@@ -537,46 +598,75 @@ void diffcore_rename(struct diff_options *options)
 				rename_dst_nr * rename_src_nr, 50, 1);
 	}
 
-	mx = xcalloc(st_mult(NUM_CANDIDATE_PER_DST, num_create), sizeof(*mx));
+	// initialize the diff_score matrix with all information
+	// needed to compute all diff_scores
+	mx = xcalloc(st_mult(rename_src_nr, num_create), sizeof(*mx));
 	for (dst_cnt = i = 0; i < rename_dst_nr; i++) {
-		struct diff_filespec *two = rename_dst[i].two;
 		struct diff_score *m;
 
 		if (rename_dst[i].pair)
 			continue; /* dealt with exact match already. */
 
-		m = &mx[dst_cnt * NUM_CANDIDATE_PER_DST];
-		for (j = 0; j < NUM_CANDIDATE_PER_DST; j++)
-			m[j].dst = -1;
+		m = &mx[dst_cnt * rename_src_nr];
 
 		for (j = 0; j < rename_src_nr; j++) {
-			struct diff_filespec *one = rename_src[j].p->one;
-			struct diff_score this_src;
+			m[j].dst = -1;
 
 			if (skip_unmodified &&
 			    diff_unmodified_pair(rename_src[j].p))
 				continue;
 
-			this_src.score = estimate_similarity(one, two,
-							     minimum_score);
-			this_src.name_score = basename_same(one, two);
-			this_src.dst = i;
-			this_src.src = j;
-			record_if_better(m, &this_src);
-			/*
-			 * Once we run estimate_similarity,
-			 * We do not need the text anymore.
-			 */
-			diff_free_filespec_blob(one);
-			diff_free_filespec_blob(two);
+			m[j].dst = i;
+			m[j].src = j;
 		}
 		dst_cnt++;
-		display_progress(progress, (i+1)*rename_src_nr);
 	}
+
+	struct diff_filespec *fspec;
+	for (i = 0; i < rename_src_nr; i++) {
+		fspec = rename_src[i].p->one;
+		pthread_mutex_init(&fspec->mutex, NULL);
+		diff_filespec_is_binary(fspec);
+	}
+	for (i = 0; i < rename_dst_nr; i++) {
+		fspec = rename_dst[i].two;
+		pthread_mutex_init(&fspec->mutex, NULL);
+		diff_filespec_is_binary(fspec);
+	}
+
+	struct calc_diff_score_thread_params params;
+
+	pthread_mutex_init(&params.mutex, NULL);
+	params.mx = mx;
+	params.i = 0;
+	params.j = 0;
+	params.dst_cnt = dst_cnt;
+	params.minimum_score = minimum_score;
+
+	int t, rename_thread_nr = online_cpus();
+
+	pthread_t *rename_threads = xcalloc(rename_thread_nr, sizeof(pthread_t));
+
+	// compute the diff_scores, treating mx as a concurrent queue
+	for (t = 0; t < rename_thread_nr; t++)
+		pthread_create(&rename_threads[t], NULL,
+			(void * (*)(void *)) threaded_calc_diff_scores, (void *) &params);
+
+	for (t = 0; t < rename_thread_nr; t++)
+		pthread_join(rename_threads[t], NULL);
+
+	free(rename_threads);
+
+	for (i = 0; i < rename_src_nr; i++)
+		pthread_mutex_destroy(&rename_src[i].p->one->mutex);
+	for (i = 0; i < rename_dst_nr; i++)
+		pthread_mutex_destroy(&rename_dst[i].two->mutex);
+	pthread_mutex_destroy(&params.mutex);
+
 	stop_progress(&progress);
 
 	/* cost matrix sorted by most to least similar pair */
-	QSORT(mx, dst_cnt * NUM_CANDIDATE_PER_DST, score_compare);
+	QSORT(mx, dst_cnt * rename_src_nr, score_compare);
 
 	rename_count += find_renames(mx, dst_cnt, minimum_score, 0);
 	if (detect_rename == DIFF_DETECT_COPY)

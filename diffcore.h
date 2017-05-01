@@ -4,6 +4,8 @@
 #ifndef DIFFCORE_H
 #define DIFFCORE_H
 
+#include "thread-utils.h"
+
 /* This header file is internal between diff.c and its diff transformers
  * (e.g. diffcore-rename, diffcore-pickaxe).  Never include this header
  * in anything else.
@@ -48,6 +50,7 @@ struct diff_filespec {
 	/* data should be considered "binary"; -1 means "don't know yet" */
 	signed int is_binary : 2;
 	struct userdiff_driver *driver;
+	pthread_mutex_t mutex;
 };
 
 extern struct diff_filespec *alloc_filespec(const char *);

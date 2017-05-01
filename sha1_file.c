@@ -27,6 +27,7 @@
 #include "list.h"
 #include "mergesort.h"
 #include "quote.h"
+#include "thread-utils.h"
 
 #define SZ_FMT PRIuMAX
 static inline uintmax_t sz_fmt(size_t s) { return s; }
@@ -2955,6 +2956,8 @@ int sha1_object_info(const unsigned char *sha1, unsigned long *sizep)
 	return type;
 }
 
+pthread_mutex_t read_pack_mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+
 static void *read_packed_sha1(const unsigned char *sha1,
 			      enum object_type *type, unsigned long *size)
 {
@@ -2963,6 +2966,9 @@ static void *read_packed_sha1(const unsigned char *sha1,
 
 	if (!find_pack_entry(sha1, &e))
 		return NULL;
+
+	pthread_mutex_lock(&read_pack_mutex);
+
 	data = cache_or_unpack_entry(e.p, e.offset, size, type);
 	if (!data) {
 		/*
@@ -2976,6 +2982,7 @@ static void *read_packed_sha1(const unsigned char *sha1,
 		mark_bad_packed_object(e.p, sha1);
 		data = read_object(sha1, type, size);
 	}
+	pthread_mutex_unlock(&read_pack_mutex);
 	return data;
 }
 

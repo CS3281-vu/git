@@ -13,6 +13,7 @@
 #include "attr.h"
 #include "dir.h"
 #include "utf8.h"
+#include "thread-utils.h"
 
 const char git_attr__true[] = "(builtin)true";
 const char git_attr__false[] = "\0(builtin)false";
@@ -298,6 +299,8 @@ static struct match_attr *parse_attr_line(const char *line, const char *src,
  * .gitignore
  */
 
+static pthread_mutex_t attr_stack_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static struct attr_stack {
 	struct attr_stack *prev;
 	char *origin;
@@ -545,6 +548,7 @@ static void bootstrap_attr_stack(void)
 
 static void prepare_attr_stack(const char *path, int dirlen)
 {
+	pthread_mutex_lock(&attr_stack_mutex);
 	struct attr_stack *elem, *info;
 	int len;
 	const char *cp;
@@ -631,6 +635,7 @@ static void prepare_attr_stack(const char *path, int dirlen)
 	 */
 	info->prev = attr_stack;
 	attr_stack = info;
+	pthread_mutex_unlock(&attr_stack_mutex);
 }
 
 static int path_matches(const char *pathname, int pathlen,
